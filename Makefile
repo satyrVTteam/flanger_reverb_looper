@@ -1,8 +1,8 @@
 # Project Name
-TARGET = flanger
+TARGET = flanger_reverb_looper
 
 # Sources
-CPP_SOURCES = flanger.cpp
+CPP_SOURCES = flanger_reverb_looper.cpp
 
 # Library Locations
 LIBDAISY_DIR = ../../libdaisy
