@@ -1,0 +1,11 @@
+knob 1 ---- looper volume
+knob 2 ---- reverb volume
+knob 3 ---- flanger delay time
+knob 4 ---- tone volume
+knob 5 ---- flanger LFO freq
+knob 6 ---- flanger LFO depth
+
+SW1 - flanger
+SW2 - reverb
+SW3 - record loop
+SW4 - play loop
