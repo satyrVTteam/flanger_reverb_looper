@@ -9,8 +9,9 @@ using namespace daisysp;
 
 Flanger    flanger;
 DaisyPetal hw;
+Tone       tone;
 
-//from looper
+//>>from looper
 bool first = true;  //first loop (sets length)
 bool rec   = false; //currently recording
 bool play  = false; //currently playing
@@ -22,27 +23,52 @@ int                 len    = 0;
 float               drywet = 0;
 bool                res    = false;
 
-
 void ResetBuffer();
 void Controls();
 void UpdateButtons();
 
 void NextSamples(float &output, float *in, size_t i);
-//from looper
+//<<from looper
 
+//>>from reverb
+Parameter vtime, vfreq, vsend;
+bool      bypass;
+ReverbSc  verb;
+//<<from reverb
+
+//>>from flanger
 bool  effectOn = true;
 float wet;
 float deltarget, del; 
 float lfotarget, lfo;
+//<<from flanger
 
 void AudioCallback(float *in, float *out, size_t size)
 {
     float output = 0; //from looper
-    
+    float dryl, dryr, wetl, wetr, sendl, sendr; //from reverb
+   
+
     hw.ProcessAllControls();
 
+    float tone_freq = 200.0f; 
+    tone.SetFreq(tone_freq); //set freq
+    float tone_out;
+
+    //>>from reverb
+    //verb.SetFeedback(vtime.Process());
+    //verb.SetLpFreq(vfreq.Process());
+    verb.SetFeedback(0.95f); //guess the reverb time you need between 0.6f, 0.999f//0.9f isn't enough 0.95f probably too much
+    verb.SetLpFreq(5000.0f); //dsmping between 500.0f, 20000.0f
+    vsend.Process(); 
+    if(hw.switches[DaisyPetal::SW_2].RisingEdge())
+        bypass = !bypass;
+    //<<from reverb
+
+    //>>from flanger
     deltarget = hw.knob[2].Process();
-    flanger.SetFeedback(hw.knob[3].Process());
+    //flanger.SetFeedback(hw.knob[3].Process());
+    flanger.SetFeedback(0.5f);
     float val = hw.knob[4].Process();
     flanger.SetLfoFreq(val * val * 10.f);
     lfotarget = hw.knob[5].Process();
@@ -53,10 +79,12 @@ void AudioCallback(float *in, float *out, size_t size)
     wet += hw.encoder.Increment() * .05f;
     wet = fclamp(wet, 0.f, 1.f);
 
-    wet = hw.encoder.RisingEdge() ? .9f : wet;
+    wet = hw.encoder.RisingEdge() ? .8f : wet; //set up default value after pressing encoder
+    //>>from flanger
 
-    //looper
-    drywet = hw.knob[0].Process();
+    drywet = hw.knob[0].Process(); //for looper
+    float tone_ratio = hw.knob[3].Process(); //for tone
+
     UpdateButtons();
 
     for(size_t i = 0; i < size; i++)
@@ -66,15 +94,43 @@ void AudioCallback(float *in, float *out, size_t size)
 
         fonepole(lfo, lfotarget, .0001f); //smooth at audio rate
         flanger.SetLfoDepth(lfo);
-
-        out[i] = out[i + 1] = in[i];
-
+       
+        //turn on tone only if effects are on
+        if (effectOn || !bypass)
+        {
+            tone_out = in[i] + tone.Process(in[i])*tone_ratio; 
+            out[i] = out[i + 1] = tone_out;
+        }
+        else
+        {
+            tone_out = in[i];
+            out[i]=out[i+1]=tone_out;
+        }
+        //then if effect is on out is taken after flanger
         if(effectOn)
         {
-            float sig = flanger.Process(in[i]);
-            out[i] = out[i + 1] = sig * wet + in[i] * (1.f - wet);
+            float sig = flanger.Process(tone_out);
+            out[i] = out[i + 1] = sig * wet + tone_out * (1.f - wet);
+        }
+        //then we send it to reverb module
+        dryl  = out[i];
+        dryr  = out[i + 1];
+        sendl = dryl * vsend.Value();
+        sendr = dryr * vsend.Value();
+        verb.Process(sendl, sendr, &wetl, &wetr);
+        if(bypass)
+        {
+            out[i]     = dryl;     // left
+            out[i + 1] = dryr; // right
+        }
+        else
+        {
+            out[i]     = dryl + wetl;
+            out[i + 1] = dryr + wetr;
         }
 
+
+        // and then we send resulting OUT into looper
         NextSamples(output, out, i);
         out[i] = out[i + 1] = output;
     }
@@ -89,8 +145,16 @@ int main(void)
     deltarget = del = 0.f;
     lfotarget = lfo = 0.f;
     flanger.Init(sample_rate);
+    wet = .8f;//default value for flanger after power off/on
 
-    wet = .9f;
+    tone.Init(sample_rate);
+
+    //>>from reverb
+    //vtime.Init(hw.knob[hw.KNOB_1], 0.6f, 0.999f, Parameter::LOGARITHMIC);//reverb time ---- fixed value see above
+    //vfreq.Init(hw.knob[hw.KNOB_2], 500.0f, 20000.0f, Parameter::LOGARITHMIC);//damping ----- fixed value see above
+    vsend.Init(hw.knob[hw.KNOB_2], 0.0f, 0.1f, Parameter::LINEAR);//send amount (was LINEAR)
+    verb.Init(sample_rate);
+    //<<from reverb
 
     hw.StartAdc();
     hw.StartAudio(AudioCallback);
@@ -100,28 +164,28 @@ int main(void)
 
         hw.ClearLeds();
         hw.SetFootswitchLed((DaisyPetal::FootswitchLed)0, (float)effectOn);
+        hw.SetFootswitchLed(hw.FOOTSWITCH_LED_2, bypass ? 0.0f : 1.0f); //from reverb
 
-        int   wet_int  = (int)(wet * 8.f);
-        float wet_frac = wet - wet_int;
+        int wet_int  = (int)(wet * 8.f);
+
         for(int i = 0; i < wet_int; i++)
         {
-            hw.SetRingLed((DaisyPetal::RingLed)i, 1.f, 0.f, 0.f);
+            if (hw.knob[3].Process()>0.001f) {hw.SetRingLed((DaisyPetal::RingLed)i, 1.f, 0.f, 0.f);}
+            else {hw.SetRingLed((DaisyPetal::RingLed)i, 0.f, 1.f, 0.f);} //make red when tone is ON
         }
 
-        if(wet_int < 8)
-        {
-            hw.SetRingLed((DaisyPetal::RingLed)wet_int, wet_frac, 0.f, 0.f);
-        }
-        //from looper
+        
+
+        //>>from looper
         hw.SetFootswitchLed((DaisyPetal::FootswitchLed)3, play);
         hw.SetFootswitchLed((DaisyPetal::FootswitchLed)2, rec);
         //hw.SetFootswitchLed((DaisyPetal::FootswitchLed)1, true);//test
-        //from looper
+        //<<from looper
         hw.UpdateLeds();
     }
 }
 
-//from looper
+//>>from looper
 //Resets the buffer
 void ResetBuffer()
 {
@@ -173,7 +237,7 @@ void UpdateButtons()
 
 void WriteBuffer(float *in, size_t i)
 {
-    buf[pos] = buf[pos] * 0.5 + in[i] * 0.5;
+    buf[pos] = buf[pos] * drywet + in[i];
     if(first)
     {
         len++;
@@ -205,6 +269,7 @@ void NextSamples(float &output, float *in, size_t i)
 
     if(!rec)
     {
-        output = output * drywet + in[i] * (1 - drywet);
+        output = output * drywet + in[i];
     }
 }
+//<<from looper
